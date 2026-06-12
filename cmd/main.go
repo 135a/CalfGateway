@@ -1,26 +1,24 @@
 package main
 
 import (
-	"net/http/httputil"
-	"net/url"
-	"os"
+	"fmt"
+	"log"
 
-	"github.com/gin-gonic/gin"
+	"CalfGatway/internal/config"
+	"CalfGatway/internal/proxy"
 )
 
 func main() {
-	// 后端目标地址，可从环境变量读取
-	target := os.Getenv("PROXY_TARGET")
-	if target == "" {
-		target = "http://localhost:8081"
+	cfg, err := config.LoadConfig("config.yaml")
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
 	}
 
-	targetURL, _ := url.Parse(target)
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-
-	r := gin.Default()
-	r.Any("/api/**", func(c *gin.Context) {
-		proxy.ServeHTTP(c.Writer, c.Request)
-	})
-	r.Run()
+	p := proxy.NewProxy(cfg)
+	
+	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	log.Printf("Starting proxy on %s", addr)
+	if err := p.Run(addr); err != nil {
+		log.Fatalf("failed to run proxy: %v", err)
+	}
 }

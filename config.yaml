@@ -25,6 +25,11 @@ routes:
     strip_prefix: /v1
     target: http://localhost:8081
     methods: []
+    rate_limit:
+      enabled: true
+      global:
+        rate: 50
+        burst: 100
     breaker:
       enabled: false
 
@@ -33,5 +38,10 @@ routes:
     strip_prefix: /v2
     target: http://localhost:8082
     methods: []
+    rate_limit:
+      enabled: true
+      global:
+        rate: 20
+        burst: 40
     breaker:
       enabled: false
