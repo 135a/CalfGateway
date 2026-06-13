@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"sync"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
@@ -22,49 +21,18 @@ func NewProxy(cfg *config.Config) *Proxy {
 		engine: gin.Default(),
 	}
 
-	// Add global rate limit middleware if enabled at top level
-	if cfg.RateLimit.Enabled {
-		p.engine.Use(RateLimitMiddleware(&cfg.RateLimit))
-	}
-
 	p.setupRoutes()
 	return p
 }
-func RateLimitMiddleware(ctg *config.RateLimitConfig) gin.HandlerFunc {
-	var globalLimiter *rate.Limiter
-	if ctg.Global.Rate > 0 {
-		globalLimiter = rate.NewLimiter(rate.Limit(ctg.Global.Rate), ctg.Global.Burst)
-	}
-	var (
-		clientLimiters sync.Map
-		perClient      *rate.Limiter
-	)
-	if ctg.PerClient.Rate > 0 {
-		perClient = rate.NewLimiter(rate.Limit(ctg.PerClient.Rate), ctg.PerClient.Burst)
-	}
+func RateLimitMiddleware(cfg *config.RateLimitConfig) gin.HandlerFunc {
+	limiter := rate.NewLimiter(rate.Limit(cfg.Rate), cfg.Burst)
 
 	return func(c *gin.Context) {
-		if globalLimiter != nil && !globalLimiter.Allow() {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": "rate limit exceeded",
-			})
+		if !limiter.Allow() {
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
+			return
 		}
-		return
-		if perClient != nil {
-			ip := c.ClientIP()
-			limiterIface, _ := clientLimiters.LoadOrStore(ip, rate.NewLimiter(
-				rate.Limit(ctg.PerClient.Rate), ctg.PerClient.Burst,
-			))
-			clientLimiter := limiterIface.(*rate.Limiter)
-			if !clientLimiter.Allow() {
-				c.AbortWithStatusJSON(http.StatusTooManyRequests,
-					gin.H{
-						"error": "per-client rate limit exceeded",
-					})
-				return
-			}
-		}
-
+		c.Next()
 	}
 }
 func (p *Proxy) setupRoutes() {
@@ -77,8 +45,13 @@ func (p *Proxy) setupRoutes() {
 		handlers := []gin.HandlerFunc{
 			p.reverseProxyHandler(proxy),
 		}
-		if route.RateLimit.Enabled {
-			rl := RateLimitMiddleware(&route.RateLimit)
+		// 路由自己的限流, 没有则 fallback 到全局默认
+		rateCfg := &route.RateLimit
+		if !route.RateLimit.Enabled {
+			rateCfg = &p.config.RateLimit
+		}
+		if rateCfg.Enabled {
+			rl := RateLimitMiddleware(rateCfg)
 			handlers = append([]gin.HandlerFunc{rl}, handlers...)
 		}
 		if len(route.Methods) > 0 {

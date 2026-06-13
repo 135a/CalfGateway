@@ -28,14 +28,9 @@ type AuthConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled   bool            `yaml:"enabled"`
-	Global    LimitConfig     `yaml:"global"`
-	PerClient LimitConfig     `yaml:"per_client"`
-}
-
-type LimitConfig struct {
-	Rate  float64 `yaml:"rate"`
-	Burst int     `yaml:"burst"`
+	Enabled bool    `yaml:"enabled"`
+	Rate    float64 `yaml:"rate"`
+	Burst   int     `yaml:"burst"`
 }
 
 type RouteConfig struct {
