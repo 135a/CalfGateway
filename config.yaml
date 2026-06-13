@@ -11,9 +11,13 @@ auth:
     - /health
 
 rate_limit:
-  enabled: true
-  rate: 100
-  burst: 200
+    enabled: true
+    global:
+      rate: 50
+      burst: 100
+    per_client:
+      rate: 10
+      burst: 20
 
 routes:
   - name: service-v1
@@ -23,10 +27,12 @@ routes:
     methods: []
     rate_limit:
       enabled: true
-      rate: 50
-      burst: 100
-    breaker:
-      enabled: false
+      global:
+        rate: 50
+        burst: 100
+      per_client:
+        rate: 10
+        burst: 20
 
   - name: service-v2
     path: /v2/*

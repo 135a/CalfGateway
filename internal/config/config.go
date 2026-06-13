@@ -13,6 +13,10 @@ type Config struct {
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
 	Routes    []RouteConfig   `yaml:"routes"`
 }
+type LimitConfig struct {
+	Rate  float64 `yaml:"rate"`
+	Burst int     `yaml:"burst"`
+}
 
 type ServerConfig struct {
 	Port         int           `yaml:"port"`
@@ -28,9 +32,9 @@ type AuthConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled bool    `yaml:"enabled"`
-	Rate    float64 `yaml:"rate"`
-	Burst   int     `yaml:"burst"`
+	Enabled   bool        `yaml:"enabled"`
+	Global    LimitConfig `yaml:"global"`
+	PerClient LimitConfig `yaml:"per_client"`
 }
 
 type RouteConfig struct {
