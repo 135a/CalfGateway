@@ -68,3 +68,7 @@ func (p *Proxy) reverseProxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFun
 		proxy.ServeHTTP(c.Writer, c.Request)
 	}
 }
+
+func (p *Proxy) Run(addr string) error {
+	return p.engine.Run(addr)
+}

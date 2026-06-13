@@ -11,13 +11,9 @@ auth:
     - /health
 
 rate_limit:
-  enabled: false
-  global:
-    rate: 100
-    burst: 200
-  per_client:
-    rate: 10
-    burst: 20
+  enabled: true
+  rate: 100
+  burst: 200
 
 routes:
   - name: service-v1
@@ -27,9 +23,8 @@ routes:
     methods: []
     rate_limit:
       enabled: true
-      global:
-        rate: 50
-        burst: 100
+      rate: 50
+      burst: 100
     breaker:
       enabled: false
 
@@ -38,10 +33,5 @@ routes:
     strip_prefix: /v2
     target: http://localhost:8082
     methods: []
-    rate_limit:
-      enabled: true
-      global:
-        rate: 20
-        burst: 40
     breaker:
       enabled: false
