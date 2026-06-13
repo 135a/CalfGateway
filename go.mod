@@ -1,4 +1,4 @@
-module CalfGatway
+module CalfGateway
 
 go 1.26
 

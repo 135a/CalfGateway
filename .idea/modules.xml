@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/CalfGatway.iml" filepath="$PROJECT_DIR$/CalfGatway.iml" />
+      <module fileurl="file://$PROJECT_DIR$/CalfGateway.iml" filepath="$PROJECT_DIR$/CalfGateway.iml" />
     </modules>
   </component>
 </project>

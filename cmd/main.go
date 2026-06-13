@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
-	"CalfGatway/internal/config"
-	"CalfGatway/internal/proxy"
+	"CalfGateway/internal/config"
+	"CalfGateway/internal/proxy"
 )
 
 func main() {
@@ -15,7 +15,7 @@ func main() {
 	}
 
 	p := proxy.NewProxy(cfg)
-	
+
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Printf("Starting proxy on %s", addr)
 	if err := p.Run(addr); err != nil {
