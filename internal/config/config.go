@@ -46,9 +46,13 @@ type RouteConfig struct {
 	RateLimit   RateLimitConfig `yaml:"rate_limit"`
 	Breaker     BreakerConfig   `yaml:"breaker"`
 }
-
 type BreakerConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled                  bool          `yaml:"enabled"`
+	ErrorThresholdCount      int           `yaml:"error_threshold_count"`
+	ErrorThresholdPercentage float64       `yaml:"error_threshold_percentage"`
+	Interval                 time.Duration `yaml:"interval"`
+	Timeout                  time.Duration `yaml:"timeout"`
+	MaxRequests              int           `yaml:"max_requests"`
 }
 
 func LoadConfig(path string) (*Config, error) {

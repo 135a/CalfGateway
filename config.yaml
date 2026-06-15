@@ -9,6 +9,7 @@ auth:
   secret: ""
   public_paths:
     - /health
+    - /v1/auth/login
 
 rate_limit:
     enabled: true
@@ -33,6 +34,13 @@ routes:
       per_client:
         rate: 10
         burst: 20
+    breaker:
+      enabled: true
+      error_threshold_count: 5
+      error_threshold_percentage: 0.5
+      interval: 10s
+      timeout: 30s
+      max_requests: 3
 
   - name: service-v2
     path: /v2/*
@@ -40,10 +48,9 @@ routes:
     target: http://localhost:8082
     methods: []
     breaker:
-      enabled: false
-auth:
-  enabled: true
-  secret: "your-256-bit-secret" # 生产环境建议通过环境变量注入
-  public_paths:
-    - /health
-    - /v1/auth/login
+      enabled: true
+      error_threshold_count: 5
+      error_threshold_percentage: 0.5
+      interval: 10s
+      timeout: 30s
+      max_requests: 3

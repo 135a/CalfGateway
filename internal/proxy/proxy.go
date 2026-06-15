@@ -2,12 +2,14 @@ package proxy
 
 import (
 	"CalfGateway/internal/config"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sony/gobreaker"
 	"golang.org/x/time/rate"
 )
 
@@ -111,7 +113,20 @@ func (p *Proxy) setupRoutes() {
 			rl := RateLimitMiddleware(&r.RateLimit)
 			handlers = append([]gin.HandlerFunc{rl}, handlers...)
 		}
-
+		if r.Breaker.Enabled {
+			cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{Name: r.Name,
+				MaxRequests: uint32(r.Breaker.MaxRequests),
+				Interval:    r.Breaker.Interval,
+				Timeout:     r.Breaker.Timeout,
+				ReadyToTrip: func(counts gobreaker.Counts) bool {
+					// 自定义触发逻辑
+					failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+					return counts.Requests >= uint32(r.Breaker.ErrorThresholdCount) && failureRatio >= r.Breaker.ErrorThresholdPercentage
+				},
+			})
+			cbm := BreakerMiddleware(cb)
+			handlers = append(handlers, cbm)
+		}
 		if len(r.Methods) > 0 {
 			for _, method := range r.Methods {
 				p.engine.Handle(method, r.Path, handlers...)
@@ -130,4 +145,24 @@ func (p *Proxy) reverseProxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFun
 
 func (p *Proxy) Run(addr string) error {
 	return p.engine.Run(addr)
+}
+func BreakerMiddleware(cb *gobreaker.CircuitBreaker) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, err := cb.Execute(
+			func() (interface{}, error) {
+				c.Next()
+				if c.Writer.Status() >= http.StatusInternalServerError {
+					return nil, fmt.Errorf("backend service error: %d", c.Writer.Status())
+				}
+				return nil, nil
+			},
+		)
+		if err != nil {
+			if err == gobreaker.ErrOpenState {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": "service temporary unavaiable (cirsuit breaker open)",
+				})
+			}
+		}
+	}
 }
