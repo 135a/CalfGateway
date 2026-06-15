@@ -41,3 +41,9 @@ routes:
     methods: []
     breaker:
       enabled: false
+auth:
+  enabled: true
+  secret: "your-256-bit-secret" # 生产环境建议通过环境变量注入
+  public_paths:
+    - /health
+    - /v1/auth/login

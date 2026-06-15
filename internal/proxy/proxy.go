@@ -21,13 +21,17 @@ func NewProxy(cfg *config.Config) *Proxy {
 		config: cfg,
 		engine: gin.Default(),
 	}
-	// 网关全局限流
+	if cfg.Auth.Enabled {
+		p.engine.Use(AuthMiddleware(&cfg.Auth))
+	}
+	// 网关全局限流 (针对所有进入网关的流量)
 	if cfg.RateLimit.Enabled {
 		p.engine.Use(GatewayRateLimitMiddleware(&cfg.RateLimit))
 	}
 	p.setupRoutes()
 	return p
 }
+
 func GatewayRateLimitMiddleware(cfg *config.RateLimitConfig) gin.HandlerFunc {
 	limiter := rate.NewLimiter(rate.Limit(cfg.Global.Rate), cfg.Global.Burst)
 	return func(c *gin.Context) {
@@ -40,16 +44,21 @@ func GatewayRateLimitMiddleware(cfg *config.RateLimitConfig) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
 func RateLimitMiddleware(cfg *config.RateLimitConfig) gin.HandlerFunc {
 	globalLimiter := rate.NewLimiter(rate.Limit(cfg.Global.Rate), cfg.Global.Burst)
 	var clientLimiters sync.Map
+
 	return func(c *gin.Context) {
+		// 1. 路由维度的全局限流
 		if !globalLimiter.Allow() {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": "rate limit exceeded",
+				"error": "route rate limit exceeded",
 			})
 			return
 		}
+
+		// 2. 路由维度的 Per-Client 限流
 		if cfg.PerClient.Rate > 0 {
 			ip := c.ClientIP()
 			limiterIface, _ := clientLimiters.LoadOrStore(ip, rate.NewLimiter(
@@ -65,34 +74,54 @@ func RateLimitMiddleware(cfg *config.RateLimitConfig) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
 func (p *Proxy) setupRoutes() {
 	for _, route := range p.config.Routes {
-		targetUrl, err := url.Parse(route.Target)
+		r := route // 闭包捕获
+		targetUrl, err := url.Parse(r.Target)
 		if err != nil {
-			panic("invalid target URL:" + route.Target)
+			panic("invalid target URL:" + r.Target)
 		}
+
 		proxy := httputil.NewSingleHostReverseProxy(targetUrl)
+
+		// 自定义 Director 以支持路径重写和 Header 处理
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			// 实现 StripPrefix
+			if r.StripPrefix != "" {
+				if path := req.URL.Path; len(path) >= len(r.StripPrefix) && path[:len(r.StripPrefix)] == r.StripPrefix {
+					req.URL.Path = path[len(r.StripPrefix):]
+					if req.URL.Path == "" {
+						req.URL.Path = "/"
+					}
+				}
+			}
+			// 透传必要的 Header
+			req.Header.Set("X-Real-IP", req.RemoteAddr)
+		}
+
 		handlers := []gin.HandlerFunc{
 			p.reverseProxyHandler(proxy),
 		}
-		// 路由自己的限流, 没有则 fallback 到全局默认
-		rateCfg := &route.RateLimit
-		if !route.RateLimit.Enabled {
-			rateCfg = &p.config.RateLimit
-		}
-		if rateCfg.Enabled {
-			rl := RateLimitMiddleware(rateCfg)
+
+		// 仅当路由显式配置了限流时才挂载，避免与网关级全局限流重复
+		if r.RateLimit.Enabled {
+			rl := RateLimitMiddleware(&r.RateLimit)
 			handlers = append([]gin.HandlerFunc{rl}, handlers...)
 		}
-		if len(route.Methods) > 0 {
-			for _, method := range route.Methods {
-				p.engine.Handle(method, route.Path, handlers...)
+
+		if len(r.Methods) > 0 {
+			for _, method := range r.Methods {
+				p.engine.Handle(method, r.Path, handlers...)
 			}
 		} else {
-			p.engine.Any(route.Path, handlers...)
+			p.engine.Any(r.Path, handlers...)
 		}
 	}
 }
+
 func (p *Proxy) reverseProxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		proxy.ServeHTTP(c.Writer, c.Request)
