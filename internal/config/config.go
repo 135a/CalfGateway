@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Auth      AuthConfig      `yaml:"auth"`
-	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	Routes    []RouteConfig   `yaml:"routes"`
+	Server      ServerConfig      `yaml:"server"`
+	Auth        AuthConfig        `yaml:"auth"`
+	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
+	Degradation DegradationConfig `yaml:"degradation"`
+	Routes      []RouteConfig     `yaml:"routes"`
 }
 type LimitConfig struct {
 	Rate  float64 `yaml:"rate"`
@@ -38,13 +39,33 @@ type RateLimitConfig struct {
 }
 
 type RouteConfig struct {
-	Name        string          `yaml:"name"`
-	Path        string          `yaml:"path"`
-	StripPrefix string          `yaml:"strip_prefix"`
-	Target      string          `yaml:"target"`
-	Methods     []string        `yaml:"methods"`
-	RateLimit   RateLimitConfig `yaml:"rate_limit"`
-	Breaker     BreakerConfig   `yaml:"breaker"`
+	Name        string             `yaml:"name"`
+	Path        string             `yaml:"path"`
+	StripPrefix string             `yaml:"strip_prefix"`
+	Target      string             `yaml:"target"`
+	Methods     []string           `yaml:"methods"`
+	RateLimit   RateLimitConfig    `yaml:"rate_limit"`
+	Breaker     BreakerConfig      `yaml:"breaker"`
+	Degradation *DegradationConfig `yaml:"degradation,omitempty"`
+}
+
+type DegradationConfig struct {
+	Enabled  bool                    `yaml:"enabled"`
+	Strategy string                  `yaml:"strategy"`
+	Cache    CacheDegradationConfig  `yaml:"cache"`
+	Static   StaticDegradationConfig `yaml:"static_response"`
+}
+
+type CacheDegradationConfig struct {
+	TTL               time.Duration `yaml:"ttl"`
+	MaxEntries        int           `yaml:"max_entries"`
+	CacheableStatuses []int         `yaml:"cacheable_statuses"`
+}
+
+type StaticDegradationConfig struct {
+	StatusCode int               `yaml:"status_code"`
+	Headers    map[string]string `yaml:"headers"`
+	Body       string            `yaml:"body"`
 }
 type BreakerConfig struct {
 	Enabled                  bool          `yaml:"enabled"`

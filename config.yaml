@@ -20,6 +20,19 @@ rate_limit:
       rate: 10
       burst: 20
 
+degradation:
+  enabled: false
+  strategy: static_response
+  static_response:
+    status_code: 200
+    headers:
+      Content-Type: application/json
+    body: '{"code":503,"message":"service degraded","data":null}'
+  cache:
+    ttl: 60s
+    max_entries: 10000
+    cacheable_statuses: [200]
+
 routes:
   - name: service-v1
     path: /v1/*
@@ -41,6 +54,14 @@ routes:
       interval: 10s
       timeout: 30s
       max_requests: 3
+    degradation:
+      enabled: false
+      strategy: static_response
+      static_response:
+        status_code: 200
+        headers:
+          Content-Type: application/json
+        body: '{"code":503,"message":"service-v1 degraded","data":null}'
 
   - name: service-v2
     path: /v2/*
