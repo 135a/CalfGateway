@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 8090
   read_timeout: 30s
   write_timeout: 30s
   grace_period: 15s
@@ -35,9 +35,9 @@ degradation:
 
 routes:
   - name: service-v1
-    path: /v1/*
+    path: /v1/*path
     strip_prefix: /v1
-    target: http://localhost:8081
+    target: http://localhost:8080
     methods: []
     rate_limit:
       enabled: true
@@ -64,7 +64,7 @@ routes:
         body: '{"code":503,"message":"service-v1 degraded","data":null}'
 
   - name: service-v2
-    path: /v2/*
+    path: /v2/*path
     strip_prefix: /v2
     target: http://localhost:8082
     methods: []
