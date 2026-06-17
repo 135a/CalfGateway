@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sony/gobreaker"
@@ -93,6 +94,12 @@ func (p *Proxy) setupRoutes() {
 		}
 
 		proxy := httputil.NewSingleHostReverseProxy(targetUrl)
+		proxy.Transport = &http.Transport{
+			MaxIdleConns:        p.config.Proxy.MaxIdleConns,
+			MaxIdleConnsPerHost: p.config.Proxy.MaxIdleConnsPerHost,
+			MaxConnsPerHost:     p.config.Proxy.MaxConnsPerHost,
+			IdleConnTimeout:     90 * time.Second,
+		}
 
 		// 自定义 Director 以支持路径重写和 Header 处理
 		originalDirector := proxy.Director

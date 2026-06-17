@@ -13,6 +13,12 @@ type Config struct {
 	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
 	Degradation DegradationConfig `yaml:"degradation"`
 	Routes      []RouteConfig     `yaml:"routes"`
+	ProXy       ProxyConfig       `yaml:"proxy"`
+}
+type ProxyConfig struct {
+	MaxIdleConns        int `yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost int `yaml:"max_idle_conns_per_host"`
+	MaxConnsPerHost     int `yaml:"max_conns_per_host"`
 }
 type LimitConfig struct {
 	Rate  float64 `yaml:"rate"`

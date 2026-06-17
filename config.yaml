@@ -4,6 +4,11 @@ server:
   write_timeout: 30s
   grace_period: 15s
 
+proxy:
+  max_idle_conns: 100
+  max_idle_conns_per_host: 100
+  max_conns_per_host: 0
+
 auth:
   enabled: false
   secret: ""
@@ -12,7 +17,7 @@ auth:
     - /v1/auth/login
 
 rate_limit:
-    enabled: true
+    enabled: false
     global:
       rate: 50
       burst: 100
@@ -40,7 +45,7 @@ routes:
     target: http://localhost:8080
     methods: []
     rate_limit:
-      enabled: true
+      enabled: false
       global:
         rate: 50
         burst: 100
@@ -48,7 +53,7 @@ routes:
         rate: 10
         burst: 20
     breaker:
-      enabled: true
+      enabled: false
       error_threshold_count: 5
       error_threshold_percentage: 0.5
       interval: 10s
