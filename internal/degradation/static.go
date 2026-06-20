@@ -14,7 +14,6 @@ type StaticResponseStrategy struct {
 	body       []byte
 }
 
-// NewStaticResponseStrategy 创建静态响应降级策略
 func NewStaticResponseStrategy(statusCode int, headers map[string]string, body string) *StaticResponseStrategy {
 	return &StaticResponseStrategy{
 		statusCode: statusCode,

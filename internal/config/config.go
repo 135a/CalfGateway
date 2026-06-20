@@ -60,6 +60,16 @@ type DegradationConfig struct {
 	Strategy string                  `yaml:"strategy"`
 	Cache    CacheDegradationConfig  `yaml:"cache"`
 	Static   StaticDegradationConfig `yaml:"static_response"`
+
+	// 自动降级指标
+	CPUThreshold         float64       `yaml:"cpu_threshold"`
+	QPSThreshold         float64       `yaml:"qps_threshold"`
+	ErrorRateThreshold   float64       `yaml:"error_rate_threshold"`
+	QPSWindowSize        time.Duration `yaml:"qps_window_size"`
+	QPSWindowBucketCount int           `yaml:"qps_window_bucket_count"`
+	ErrorWindowSize      time.Duration `yaml:"error_window_size"`
+	ErrorWindowBucketCnt int           `yaml:"error_window_bucket_count"`
+	MinSamples           int           `yaml:"min_samples"`
 }
 
 type CacheDegradationConfig struct {

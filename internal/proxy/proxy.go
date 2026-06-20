@@ -3,6 +3,7 @@ package proxy
 import (
 	"CalfGateway/internal/config"
 	"CalfGateway/internal/degradation"
+	"CalfGateway/internal/monitor"
 	"bytes"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 type Proxy struct {
 	config      *config.Config
 	engine      *gin.Engine
+	monitor     *monitor.Monitor
 	degManager  *degradation.Manager
 	degRecorder *degradation.Recorder
 }
