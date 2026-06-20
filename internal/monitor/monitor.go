@@ -8,20 +8,13 @@ import (
 	"github.com/shirou/gopsutil/v3/cpu"
 )
 
-// DegradationRecorder 降级事件记录器接口（避免循环依赖）
-type DegradationRecorder interface {
-	Record(route, strategy, reason string)
-	TotalCount() int64
-}
-
 // Monitor 网关监控器——采集原始指标，按需组装 DegradationMetrics
 type Monitor struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	cpuPercent   float64
-	qpsWindow    *QPSWindow              // QPS 时间窗口（全局一个）
-	errorWindows map[string]*ErrorWindow // 错误率时间窗口（每路由一个）
-	degRecorder  DegradationRecorder     // 降级事件记录器
+	qpsWindow    *QPSWindow
+	errorWindows map[string]*ErrorWindow
 }
 
 // NewMonitor 创建 Monitor（QPS 窗口使用全局 qps_window 配置）
@@ -99,16 +92,6 @@ func (m *Monitor) GetMetrics(routeName string) DegradationMetrics {
 		QPS:        m.qpsWindow.QPS(),
 		ErrorRate:  errRate,
 	}
-}
-
-// SetDegRecorder 设置降级事件记录器
-func (m *Monitor) SetDegRecorder(r DegradationRecorder) {
-	m.degRecorder = r
-}
-
-// DegRecorder 获取降级事件记录器
-func (m *Monitor) DegRecorder() DegradationRecorder {
-	return m.degRecorder
 }
 
 // QPSWindow QPS 统计窗口——只统计请求数，不区分成功/失败

@@ -21,25 +21,21 @@ import (
 var defaultWindow = monitor.TimeWindowConfig{Size: 10 * time.Second, BucketCount: 10}
 
 type Proxy struct {
-	config      *config.Config
-	engine      *gin.Engine
-	monitor     *monitor.Monitor
-	degRecorder *degradation.Recorder
+	config  *config.Config
+	engine  *gin.Engine
+	monitor *monitor.Monitor
 }
 
 func NewProxy(cfg *config.Config) *Proxy {
 	qpsCfg := toWindowCfg(cfg.Degradation.QPSWindow, defaultWindow)
 
-	recorder := degradation.NewRecorder()
 	mon := monitor.NewMonitor(qpsCfg)
-	mon.SetDegRecorder(recorder)
 	mon.Start()
 
 	p := &Proxy{
-		config:      cfg,
-		engine:      gin.Default(),
-		monitor:     mon,
-		degRecorder: recorder,
+		config:  cfg,
+		engine:  gin.Default(),
+		monitor: mon,
 	}
 	if cfg.Auth.Enabled {
 		p.engine.Use(AuthMiddleware(&cfg.Auth))
@@ -236,7 +232,6 @@ func (p *Proxy) degradationMiddleware(strategy degradation.Strategy, judge *degr
 		c.Header("X-Degradation-Reason", reason.String())
 		writeResponse(c, resp)
 		c.Abort()
-		p.degRecorder.Record(judge.Threshold().RouteName, strategy.Name(), reason.String())
 	}
 }
 
