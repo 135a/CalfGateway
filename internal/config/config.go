@@ -57,9 +57,24 @@ type RouteConfig struct {
 
 type DegradationConfig struct {
 	Enabled  bool                    `yaml:"enabled"`
-	Strategy string                  `yaml:"strategy"`
+	Strategy string                  `yaml:"strategy"` // static_response | cache
 	Cache    CacheDegradationConfig  `yaml:"cache"`
 	Static   StaticDegradationConfig `yaml:"static_response"`
+
+	// 自动降级阈值（0 = 不启用该项判定）
+	CPUThreshold       float64 `yaml:"cpu_threshold"`        // CPU 最大利用率阈值 0-100
+	QPSThreshold       float64 `yaml:"qps_threshold"`        // 全局 QPS 阈值
+	ErrorRateThreshold float64 `yaml:"error_rate_threshold"` // 本路由错误率阈值 0-1
+
+	// 时间窗口配置
+	QPSWindow   WindowConfig `yaml:"qps_window"`   // QPS 统计窗口（全局生效）
+	ErrorWindow WindowConfig `yaml:"error_window"` // 错误率统计窗口（每路由）
+}
+
+// WindowConfig 滑动窗口配置
+type WindowConfig struct {
+	Size        time.Duration `yaml:"size"`         // 窗口总大小，如 10s
+	BucketCount int           `yaml:"bucket_count"` // 桶数量，决定精度，如 10
 }
 
 type CacheDegradationConfig struct {
