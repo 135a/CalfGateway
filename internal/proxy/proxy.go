@@ -3,7 +3,6 @@ package proxy
 import (
 	"CalfGateway/internal/config"
 	"CalfGateway/internal/degradation"
-	"CalfGateway/internal/monitor"
 	"bytes"
 	"fmt"
 	"io"
@@ -21,8 +20,6 @@ import (
 type Proxy struct {
 	config      *config.Config
 	engine      *gin.Engine
-	monitor     *monitor.Monitor
-	degManager  *degradation.Manager
 	degRecorder *degradation.Recorder
 }
 
@@ -30,7 +27,6 @@ func NewProxy(cfg *config.Config) *Proxy {
 	p := &Proxy{
 		config:      cfg,
 		engine:      gin.Default(),
-		degManager:  degradation.NewManager(),
 		degRecorder: degradation.NewRecorder(),
 	}
 	if cfg.Auth.Enabled {
@@ -129,45 +125,25 @@ func (p *Proxy) setupRoutes() {
 		}
 
 		// 解析降级策略
-		var degStrategy degradation.Strategy
-		if degCfg != nil && degCfg.Enabled {
-			switch degCfg.Strategy {
-			case "static_response":
-				degStrategy = degradation.NewStaticResponseStrategy(
-					degCfg.Static.StatusCode,
-					degCfg.Static.Headers,
-					degCfg.Static.Body,
-				)
-			case "cache":
-				degStrategy = degradation.NewCacheStrategy(
-					degCfg.Cache.TTL,
-					degCfg.Cache.MaxEntries,
-					degCfg.Cache.CacheableStatuses,
-				)
-			}
-			if degStrategy != nil {
-				p.degManager.Register(degStrategy)
-			}
-		}
+		degStrategy := buildStrategy(degCfg)
 
-		handlers := []gin.HandlerFunc{
-			p.reverseProxyHandler(proxy),
-		}
-
-		// 缓存降级策略需要捕获响应体，使用特殊处理器
+		// 核心处理器：默认反向代理；缓存降级需要捕获响应体，使用特殊处理器
+		var coreHandler gin.HandlerFunc
 		if cs, ok := degStrategy.(*degradation.CacheStrategy); ok {
-			handlers = []gin.HandlerFunc{
-				p.cachedReverseProxyHandler(proxy, cs),
-			}
+			coreHandler = p.cachedReverseProxyHandler(proxy, cs)
+		} else {
+			coreHandler = p.reverseProxyHandler(proxy)
 		}
 
-		// 仅当路由显式配置了限流时才挂载，避免与网关级全局限流重复
+		// 组装中间件链，执行顺序：限流 → 熔断(含降级) → 核心处理器。
+		// 注意：熔断中间件必须排在核心处理器之前，因为它通过 c.Next() 包裹后端调用。
+		var handlers []gin.HandlerFunc
 		if r.RateLimit.Enabled {
-			rl := RateLimitMiddleware(&r.RateLimit)
-			handlers = append([]gin.HandlerFunc{rl}, handlers...)
+			handlers = append(handlers, RateLimitMiddleware(&r.RateLimit))
 		}
 		if r.Breaker.Enabled {
-			cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{Name: r.Name,
+			cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
+				Name:        r.Name,
 				MaxRequests: uint32(r.Breaker.MaxRequests),
 				Interval:    r.Breaker.Interval,
 				Timeout:     r.Breaker.Timeout,
@@ -177,9 +153,10 @@ func (p *Proxy) setupRoutes() {
 					return counts.Requests >= uint32(r.Breaker.ErrorThresholdCount) && failureRatio >= r.Breaker.ErrorThresholdPercentage
 				},
 			})
-			cbm := BreakerWithDegradationMiddleware(cb, degStrategy, p.degRecorder, r.Name)
-			handlers = append(handlers, cbm)
+			handlers = append(handlers, BreakerWithDegradationMiddleware(cb, degStrategy, p.degRecorder, r.Name))
 		}
+		handlers = append(handlers, coreHandler)
+
 		if len(r.Methods) > 0 {
 			for _, method := range r.Methods {
 				p.engine.Handle(method, r.Path, handlers...)
@@ -190,6 +167,29 @@ func (p *Proxy) setupRoutes() {
 	}
 }
 
+// buildStrategy 根据降级配置构造对应的降级策略；未启用或类型未知时返回 nil
+func buildStrategy(degCfg *config.DegradationConfig) degradation.Strategy {
+	if degCfg == nil || !degCfg.Enabled {
+		return nil
+	}
+	switch degCfg.Strategy {
+	case "static_response":
+		return degradation.NewStaticResponseStrategy(
+			degCfg.Static.StatusCode,
+			degCfg.Static.Headers,
+			degCfg.Static.Body,
+		)
+	case "cache":
+		return degradation.NewCacheStrategy(
+			degCfg.Cache.TTL,
+			degCfg.Cache.MaxEntries,
+			degCfg.Cache.CacheableStatuses,
+		)
+	default:
+		return nil
+	}
+}
+
 func (p *Proxy) reverseProxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		proxy.ServeHTTP(c.Writer, c.Request)
@@ -197,7 +197,7 @@ func (p *Proxy) reverseProxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFun
 }
 
 // cachedReverseProxyHandler 支持缓存响应的反向代理处理器
-// 用于缓存降级策略，在正常响应时缓存 body
+// 用于缓存降级策略，在正常响应时缓存 body，供熔断降级时回放
 func (p *Proxy) cachedReverseProxyHandler(proxy *httputil.ReverseProxy, cs *degradation.CacheStrategy) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		body := new(bytes.Buffer)
@@ -209,7 +209,7 @@ func (p *Proxy) cachedReverseProxyHandler(proxy *httputil.ReverseProxy, cs *degr
 
 		proxy.ServeHTTP(w, c.Request)
 
-		// 缓存可缓存的状态码响应
+		// 缓存非 5xx 的响应（具体是否可缓存由策略的 cacheable_statuses 决定）
 		if c.Writer.Status() < http.StatusInternalServerError {
 			cs.Store(c.Request, c.Writer.Status(), body.Bytes())
 		}
@@ -232,50 +232,48 @@ func (p *Proxy) Run(addr string) error {
 }
 
 // BreakerWithDegradationMiddleware 熔断中间件（支持降级）
-// 当熔断器开启时，优先执行降级策略；降级也失败时返回 503
+// 当熔断器开启时，请求不会打到后端，此时优先执行降级策略；
+// 无降级策略或降级失败时返回 503。
+// 注意：仅在熔断开启（ErrOpenState）这一“响应尚未写出”的情况下才写降级响应，
+// 后端自身返回 5xx 时响应已写出，不在此处重复写，避免 superfluous WriteHeader。
 func BreakerWithDegradationMiddleware(cb *gobreaker.CircuitBreaker, strategy degradation.Strategy, recorder *degradation.Recorder, routeName string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		_, err := cb.Execute(
-			func() (interface{}, error) {
-				c.Next()
-				if c.Writer.Status() >= http.StatusInternalServerError {
-					return nil, fmt.Errorf("backend service error: %d", c.Writer.Status())
-				}
-				return nil, nil
-			},
-		)
-		if err != nil {
-			if err == gobreaker.ErrOpenState && strategy != nil {
-				// 熔断开启 → 执行降级策略
-				resp, degErr := strategy.Execute(c.Request.Context(), c.Request)
-				if degErr == nil {
-					for k, v := range resp.Header {
-						for _, hv := range v {
-							c.Header(k, hv)
-						}
-					}
-					c.Status(resp.StatusCode)
-					body, _ := io.ReadAll(resp.Body)
-					resp.Body.Close()
-					c.Writer.Write(body)
-					c.Abort()
-					if recorder != nil {
-						recorder.Record(routeName, strategy.Name(), "circuit_breaker_open")
-					}
-					return
-				}
+		_, err := cb.Execute(func() (interface{}, error) {
+			c.Next()
+			if c.Writer.Status() >= http.StatusInternalServerError {
+				return nil, fmt.Errorf("backend service error: %d", c.Writer.Status())
 			}
+			return nil, nil
+		})
 
-			// 降级也失败或无降级策略时，返回 503
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-				"error": "service temporary unavailable (circuit breaker open)",
-			})
+		if err != gobreaker.ErrOpenState {
+			// 熔断未开启：后端已被调用且响应已写出（包括 5xx），此处不再处理
+			return
 		}
-	}
-}
 
-// BreakerMiddleware 熔断中间件（无降级）
-// 保留以保持向后兼容
-func BreakerMiddleware(cb *gobreaker.CircuitBreaker) gin.HandlerFunc {
-	return BreakerWithDegradationMiddleware(cb, nil, nil, "")
+		// 熔断开启：尝试执行降级策略
+		if strategy != nil {
+			if resp, degErr := strategy.Execute(c.Request.Context(), c.Request); degErr == nil {
+				for k, vs := range resp.Header {
+					for _, v := range vs {
+						c.Header(k, v)
+					}
+				}
+				c.Status(resp.StatusCode)
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				c.Writer.Write(body)
+				c.Abort()
+				if recorder != nil {
+					recorder.Record(routeName, strategy.Name(), "circuit_breaker_open")
+				}
+				return
+			}
+		}
+
+		// 无降级策略或降级失败，返回 503
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+			"error": "service temporary unavailable (circuit breaker open)",
+		})
+	}
 }
