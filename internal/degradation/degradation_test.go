@@ -225,6 +225,62 @@ func TestJudge_EmptyRouteName(t *testing.T) {
 	}
 }
 
+func TestJudge_CPUExceedsThreshold(t *testing.T) {
+	m := newTestMonitor()
+	m.SetCPUPct(90)
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:    "test",
+		CPUThreshold: 80,
+	})
+
+	degraded, reason := judge.ShouldDegrade()
+	if !degraded {
+		t.Fatal("expected degradation due to CPU overload")
+	}
+	if reason != ReasonCPUOverload {
+		t.Fatalf("expected CPUOverload, got %v", reason)
+	}
+}
+
+func TestJudge_CPUBelowThreshold(t *testing.T) {
+	m := newTestMonitor()
+	m.SetCPUPct(50)
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:    "test",
+		CPUThreshold: 80,
+	})
+
+	degraded, _ := judge.ShouldDegrade()
+	if degraded {
+		t.Fatal("expected no degradation when CPU is below threshold")
+	}
+}
+
+func TestJudge_CPUPriorityOverQPS(t *testing.T) {
+	m := newTestMonitor()
+	m.SetCPUPct(90) // CPU 超阈值
+	for i := 0; i < 10; i++ {
+		m.Record("test", monitor.ErrNone) // QPS 也超阈值
+	}
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:    "test",
+		CPUThreshold: 80,
+		QPSThreshold: 5,
+	})
+
+	degraded, reason := judge.ShouldDegrade()
+	if !degraded {
+		t.Fatal("expected degradation")
+	}
+	// CPU 检查在 QPS 之前，应优先返回 CPUOverload
+	if reason != ReasonCPUOverload {
+		t.Fatalf("expected CPUOverload (checked first), got %v", reason)
+	}
+}
+
 // QPS 阈值 > 错误率阈值，且 QPS 先超 → 应返回 QPS 原因
 func TestJudge_QPSPriorityOverErrorRate(t *testing.T) {
 	m := newTestMonitor()
