@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/sony/gobreaker"
 )
 
@@ -22,6 +23,7 @@ var defaultWindow = monitor.TimeWindowConfig{Size: 10 * time.Second, BucketCount
 type Proxy struct {
 	provider *config.Provider
 	monitor  *monitor.Monitor
+	rdb      *redis.Client
 	handler  atomic.Value // holds *gin.Engine
 }
 
@@ -58,9 +60,19 @@ func (p *Proxy) rebuildEngine() {
 		p.monitor = mon
 	}
 
+	if p.rdb != nil {
+		p.rdb.Close()
+	}
+	p.rdb = redis.NewClient(&redis.Options{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+		PoolSize: cfg.Redis.PoolSize,
+	})
+
 	engine := gin.Default()
 	if cfg.Auth.Enabled {
-		engine.Use(middleware.AuthMiddleware(&cfg.Auth))
+		engine.Use(middleware.AuthMiddleware(&cfg.Auth, p.rdb))
 	}
 	if cfg.RateLimit.Enabled {
 		engine.Use(middleware.GatewayRateLimitMiddleware(&cfg.RateLimit))

@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Server      ServerConfig      `yaml:"server"`
 	Auth        AuthConfig        `yaml:"auth"`
+	Redis       RedisConfig       `yaml:"redis"`
 	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
 	Degradation DegradationConfig `yaml:"degradation"`
 	Routes      []RouteConfig     `yaml:"routes"`
@@ -34,8 +35,14 @@ type ServerConfig struct {
 
 type AuthConfig struct {
 	Enabled     bool     `yaml:"enabled"`
-	Secret      string   `yaml:"secret"`
 	PublicPaths []string `yaml:"public_paths"`
+}
+
+type RedisConfig struct {
+	Addr     string `yaml:"addr"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+	PoolSize int    `yaml:"pool_size"`
 }
 
 type RateLimitConfig struct {

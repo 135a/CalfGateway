@@ -8,10 +8,15 @@ server:
 
 auth:
   enabled: true
-  secret: "my-gateway-jwt-secret-at-least-32-chars"
   public_paths:
     - /health
 #    - /v1/api/hello
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+  pool_size: 100
 
 rate_limit:
     enabled: false

@@ -6,10 +6,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/redis/go-redis/v9"
 )
 
-func AuthMiddleware(ctg *config.AuthConfig) gin.HandlerFunc {
+func AuthMiddleware(ctg *config.AuthConfig, rdb *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		for _, path := range ctg.PublicPaths {
 			if strings.HasPrefix(c.Request.URL.Path, path) {
@@ -28,22 +28,16 @@ func AuthMiddleware(ctg *config.AuthConfig) gin.HandlerFunc {
 			return
 		}
 		tokenString := parts[1]
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return []byte(ctg.Secret), nil
-		})
-		if err != nil || !token.Valid {
+		
+		userId, err := rdb.Get(c.Request.Context(), "session:"+tokenString).Result()
+		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 			return
 		}
-		// 5. 将解析出的 Claims 存入上下文
-		if claims, ok := token.Claims.(jwt.MapClaims); ok {
-			c.Set("user_claims", claims)
-			// 建议：将关键信息通过 Header 透传给后端
-			if userId, ok := claims["sub"].(string); ok {
-				c.Request.Header.Set("X-User-ID", userId)
-			}
-		}
+		
+		c.Set("user_id", userId)
+		c.Request.Header.Set("X-User-ID", userId)
+		
 		c.Next()
-
 	}
 }
