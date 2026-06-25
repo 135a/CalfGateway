@@ -3,93 +3,76 @@ package proxy
 import (
 	"CalfGateway/internal/config"
 	"CalfGateway/internal/degradation"
+	"CalfGateway/internal/middleware"
 	"CalfGateway/internal/monitor"
-	"fmt"
-	"io"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sony/gobreaker"
-	"golang.org/x/time/rate"
 )
 
 // 默认时间窗口：10s、10 个桶
 var defaultWindow = monitor.TimeWindowConfig{Size: 10 * time.Second, BucketCount: 10}
 
 type Proxy struct {
-	config  *config.Config
-	engine  *gin.Engine
-	monitor *monitor.Monitor
+	provider *config.Provider
+	monitor  *monitor.Monitor
+	handler  atomic.Value // holds *gin.Engine
 }
 
-func NewProxy(cfg *config.Config) *Proxy {
-	qpsCfg := toWindowCfg(cfg.Degradation.QPSWindow, defaultWindow)
-
-	mon := monitor.NewMonitor(qpsCfg)
-	mon.Start()
-
+func NewProxy(provider *config.Provider) *Proxy {
 	p := &Proxy{
-		config:  cfg,
-		engine:  gin.Default(),
-		monitor: mon,
+		provider: provider,
 	}
-	if cfg.Auth.Enabled {
-		p.engine.Use(AuthMiddleware(&cfg.Auth))
-	}
-	if cfg.RateLimit.Enabled {
-		p.engine.Use(GatewayRateLimitMiddleware(&cfg.RateLimit))
-	}
-	p.setupRoutes()
+
+	p.rebuildEngine()
+
+	go func() {
+		for range provider.OnUpdate() {
+			log.Println("Proxy rebuilding routes due to config update...")
+			p.rebuildEngine()
+			log.Println("Proxy routes rebuilt successfully")
+		}
+	}()
+
 	return p
 }
 
-func GatewayRateLimitMiddleware(cfg *config.RateLimitConfig) gin.HandlerFunc {
-	limiter := rate.NewLimiter(rate.Limit(cfg.Global.Rate), cfg.Global.Burst)
-	return func(c *gin.Context) {
-		if !limiter.Allow() {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": "gateway rate limit exceeded",
-			})
-			return
-		}
-		c.Next()
+func (p *Proxy) rebuildEngine() {
+	cfg := p.provider.Get()
+	if cfg == nil {
+		log.Println("Warning: rebuildEngine called but config is nil")
+		return
 	}
+
+	// 监控实例可以复用，或者仅当不存在时创建
+	if p.monitor == nil {
+		qpsCfg := toWindowCfg(cfg.Degradation.QPSWindow, defaultWindow)
+		mon := monitor.NewMonitor(qpsCfg)
+		mon.Start()
+		p.monitor = mon
+	}
+
+	engine := gin.Default()
+	if cfg.Auth.Enabled {
+		engine.Use(middleware.AuthMiddleware(&cfg.Auth))
+	}
+	if cfg.RateLimit.Enabled {
+		engine.Use(middleware.GatewayRateLimitMiddleware(&cfg.RateLimit))
+	}
+	
+	p.setupRoutes(engine, cfg)
+
+	p.handler.Store(engine)
 }
 
-func RateLimitMiddleware(cfg *config.RateLimitConfig) gin.HandlerFunc {
-	globalLimiter := rate.NewLimiter(rate.Limit(cfg.Global.Rate), cfg.Global.Burst)
-	var clientLimiters sync.Map
-
-	return func(c *gin.Context) {
-		if !globalLimiter.Allow() {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": "route rate limit exceeded",
-			})
-			return
-		}
-
-		if cfg.PerClient.Rate > 0 {
-			ip := c.ClientIP()
-			limiterIface, _ := clientLimiters.LoadOrStore(ip, rate.NewLimiter(
-				rate.Limit(cfg.PerClient.Rate), cfg.PerClient.Burst,
-			))
-			if !limiterIface.(*rate.Limiter).Allow() {
-				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-					"error": "per-client rate limit exceeded",
-				})
-				return
-			}
-		}
-		c.Next()
-	}
-}
-
-func (p *Proxy) setupRoutes() {
-	for _, route := range p.config.Routes {
+func (p *Proxy) setupRoutes(engine *gin.Engine, cfg *config.Config) {
+	for _, route := range cfg.Routes {
 		r := route
 		targetUrl, err := url.Parse(r.Target)
 		if err != nil {
@@ -98,9 +81,9 @@ func (p *Proxy) setupRoutes() {
 
 		proxy := httputil.NewSingleHostReverseProxy(targetUrl)
 		proxy.Transport = &http.Transport{
-			MaxIdleConns:        p.config.Proxy.MaxIdleConns,
-			MaxIdleConnsPerHost: p.config.Proxy.MaxIdleConnsPerHost,
-			MaxConnsPerHost:     p.config.Proxy.MaxConnsPerHost,
+			MaxIdleConns:        cfg.Proxy.MaxIdleConns,
+			MaxIdleConnsPerHost: cfg.Proxy.MaxIdleConnsPerHost,
+			MaxConnsPerHost:     cfg.Proxy.MaxConnsPerHost,
 			IdleConnTimeout:     90 * time.Second,
 		}
 
@@ -121,8 +104,8 @@ func (p *Proxy) setupRoutes() {
 		var degCfg *config.DegradationConfig
 		if r.Degradation != nil {
 			degCfg = r.Degradation
-		} else if p.config.Degradation.Enabled {
-			degCfg = &p.config.Degradation
+		} else if cfg.Degradation.Enabled {
+			degCfg = &cfg.Degradation
 		}
 
 		degStrategy := buildStrategy(degCfg)
@@ -130,7 +113,7 @@ func (p *Proxy) setupRoutes() {
 		// 中间件链：指标采集 → 自动降级判定 → 限流 → 熔断 → 反向代理
 		var handlers []gin.HandlerFunc
 
-		handlers = append(handlers, p.metricsMiddleware(r.Name))
+		handlers = append(handlers, middleware.MetricsMiddleware(p.monitor, r.Name))
 
 		if degStrategy != nil && degCfg != nil && hasThreshold(degCfg) {
 			p.monitor.InitErrorWindow(r.Name, toWindowCfg(degCfg.ErrorWindow, defaultWindow))
@@ -140,11 +123,11 @@ func (p *Proxy) setupRoutes() {
 				QPSThreshold:       degCfg.QPSThreshold,
 				ErrorRateThreshold: degCfg.ErrorRateThreshold,
 			})
-			handlers = append(handlers, p.degradationMiddleware(degStrategy, judge))
+			handlers = append(handlers, middleware.DegradationMiddleware(degStrategy, judge))
 		}
 
 		if r.RateLimit.Enabled {
-			handlers = append(handlers, RateLimitMiddleware(&r.RateLimit))
+			handlers = append(handlers, middleware.RateLimitMiddleware(&r.RateLimit))
 		}
 
 		if r.Breaker.Enabled {
@@ -158,17 +141,17 @@ func (p *Proxy) setupRoutes() {
 					return counts.Requests >= uint32(r.Breaker.ErrorThresholdCount) && failureRatio >= r.Breaker.ErrorThresholdPercentage
 				},
 			})
-			handlers = append(handlers, BreakerMiddleware(cb))
+			handlers = append(handlers, middleware.BreakerMiddleware(cb))
 		}
 
 		handlers = append(handlers, p.reverseProxyHandler(proxy))
 
 		if len(r.Methods) > 0 {
 			for _, method := range r.Methods {
-				p.engine.Handle(method, r.Path, handlers...)
+				engine.Handle(method, r.Path, handlers...)
 			}
 		} else {
-			p.engine.Any(r.Path, handlers...)
+			engine.Any(r.Path, handlers...)
 		}
 	}
 }
@@ -198,80 +181,17 @@ func toWindowCfg(c config.WindowConfig, def monitor.TimeWindowConfig) monitor.Ti
 	return monitor.TimeWindowConfig{Size: c.Size, BucketCount: c.BucketCount}
 }
 
-func (p *Proxy) metricsMiddleware(routeName string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Next()
-
-		errType := monitor.ErrNone
-		if degraded, ok := c.Get("degraded"); ok && degraded == true {
-			errType = monitor.ErrDegraded
-		} else if c.Writer.Status() >= http.StatusInternalServerError {
-			errType = monitor.ErrBackend5xx
-		}
-		p.monitor.Record(routeName, errType)
-	}
-}
-
-func (p *Proxy) degradationMiddleware(strategy degradation.Strategy, judge *degradation.Judge) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		degrade, reason := judge.ShouldDegrade()
-		if !degrade {
-			c.Next()
-			return
-		}
-
-		c.Set("degraded", true)
-		resp, err := strategy.Execute(c.Request.Context(), c.Request)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-				"error": "service degraded",
-			})
-			return
-		}
-
-		c.Header("X-Degradation-Reason", reason.String())
-		writeResponse(c, resp)
-		c.Abort()
-	}
-}
-
 func (p *Proxy) reverseProxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		proxy.ServeHTTP(c.Writer, c.Request)
 	}
 }
 
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	handler := p.handler.Load().(*gin.Engine)
+	handler.ServeHTTP(w, req)
+}
+
 func (p *Proxy) Run(addr string) error {
-	return p.engine.Run(addr)
-}
-
-func writeResponse(c *gin.Context, resp *http.Response) {
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			c.Header(k, v)
-		}
-	}
-	c.Status(resp.StatusCode)
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	c.Writer.Write(body)
-}
-
-// BreakerMiddleware 熔断中间件：熔断打开时返回 503，不执行降级策略
-func BreakerMiddleware(cb *gobreaker.CircuitBreaker) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		_, err := cb.Execute(func() (interface{}, error) {
-			c.Next()
-			if c.Writer.Status() >= http.StatusInternalServerError {
-				return nil, fmt.Errorf("backend service error: %d", c.Writer.Status())
-			}
-			return nil, nil
-		})
-
-		if err == gobreaker.ErrOpenState {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-				"error": "service temporary unavailable (circuit breaker open)",
-			})
-		}
-	}
+	return http.ListenAndServe(addr, p)
 }

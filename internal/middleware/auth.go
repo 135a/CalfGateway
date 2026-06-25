@@ -1,4 +1,4 @@
-package proxy
+package middleware
 
 import (
 	"CalfGateway/internal/config"
