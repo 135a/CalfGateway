@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -12,8 +13,8 @@ import (
 )
 
 const (
-	ConfigRedisKey     = "gateway:config"
-	ConfigRedisChannel = "gateway:config:reload"
+	ConfigRedisGlobalKey = "gateway:config:global"
+	ConfigRedisRoutesKey = "gateway:config:routes"
 )
 
 type Provider struct {
@@ -45,7 +46,7 @@ func (p *Provider) Init(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to load config from local file: %w", err)
 		}
-		// Write it to Redis so it's there
+		// Write it to Redis in fine-grained hash format
 		_ = p.PushToRedis(ctx, cfg)
 	} else {
 		// Update local backup
@@ -57,14 +58,33 @@ func (p *Provider) Init(ctx context.Context) error {
 }
 
 func (p *Provider) loadFromRedis(ctx context.Context) (*Config, error) {
-	data, err := p.rdb.Get(ctx, ConfigRedisKey).Result()
+	var cfg Config
+
+	// 1. Load Globals
+	globals, err := p.rdb.HGetAll(ctx, ConfigRedisGlobalKey).Result()
+	if err != nil || len(globals) == 0 {
+		return nil, fmt.Errorf("global config not found in redis")
+	}
+
+	if val, ok := globals["server"]; ok { json.Unmarshal([]byte(val), &cfg.Server) }
+	if val, ok := globals["auth"]; ok { json.Unmarshal([]byte(val), &cfg.Auth) }
+	if val, ok := globals["redis"]; ok { json.Unmarshal([]byte(val), &cfg.Redis) }
+	if val, ok := globals["rate_limit"]; ok { json.Unmarshal([]byte(val), &cfg.RateLimit) }
+	if val, ok := globals["degradation"]; ok { json.Unmarshal([]byte(val), &cfg.Degradation) }
+	if val, ok := globals["proxy"]; ok { json.Unmarshal([]byte(val), &cfg.Proxy) }
+
+	// 2. Load Routes
+	routesMap, err := p.rdb.HGetAll(ctx, ConfigRedisRoutesKey).Result()
 	if err != nil {
 		return nil, err
 	}
-	var cfg Config
-	if err := yaml.Unmarshal([]byte(data), &cfg); err != nil {
-		return nil, err
+	for _, routeJSON := range routesMap {
+		var route RouteConfig
+		if err := json.Unmarshal([]byte(routeJSON), &route); err == nil {
+			cfg.Routes = append(cfg.Routes, route)
+		}
 	}
+
 	return &cfg, nil
 }
 
@@ -84,32 +104,8 @@ func (p *Provider) Get() *Config {
 }
 
 func (p *Provider) Subscribe(ctx context.Context) {
-	pubsub := p.rdb.Subscribe(ctx, ConfigRedisChannel)
-	defer pubsub.Close()
-
-	ch := pubsub.Channel()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-ch:
-			log.Printf("received config update notification: %s", msg.Payload)
-			cfg, err := p.loadFromRedis(ctx)
-			if err != nil {
-				log.Printf("failed to reload config from redis: %v", err)
-				continue
-			}
-			p.configVal.Store(cfg)
-			p.backupLocal(cfg)
-			log.Println("config updated successfully in memory")
-
-			// Notify listeners
-			select {
-			case p.onUpdateCh <- struct{}{}:
-			default:
-			}
-		}
-	}
+	// 暂不实现 Push / PubSub 逻辑
+	log.Println("PubSub for fine-grained config is disabled as requested.")
 }
 
 func (p *Provider) OnUpdate() <-chan struct{} {
@@ -117,14 +113,29 @@ func (p *Provider) OnUpdate() <-chan struct{} {
 }
 
 func (p *Provider) PushToRedis(ctx context.Context, cfg *Config) error {
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
+	// Push Globals
+	globals := make(map[string]interface{})
+	if b, err := json.Marshal(cfg.Server); err == nil { globals["server"] = b }
+	if b, err := json.Marshal(cfg.Auth); err == nil { globals["auth"] = b }
+	if b, err := json.Marshal(cfg.Redis); err == nil { globals["redis"] = b }
+	if b, err := json.Marshal(cfg.RateLimit); err == nil { globals["rate_limit"] = b }
+	if b, err := json.Marshal(cfg.Degradation); err == nil { globals["degradation"] = b }
+	if b, err := json.Marshal(cfg.Proxy); err == nil { globals["proxy"] = b }
+	
+	if len(globals) > 0 {
+		p.rdb.HSet(ctx, ConfigRedisGlobalKey, globals)
 	}
-	err = p.rdb.Set(ctx, ConfigRedisKey, data, 0).Err()
-	if err != nil {
-		return err
+
+	// Push Routes
+	if len(cfg.Routes) > 0 {
+		routes := make(map[string]interface{})
+		for _, route := range cfg.Routes {
+			if b, err := json.Marshal(route); err == nil {
+				routes[route.Name] = b
+			}
+		}
+		p.rdb.HSet(ctx, ConfigRedisRoutesKey, routes)
 	}
-	// Publish update
-	return p.rdb.Publish(ctx, ConfigRedisChannel, "updated").Err()
+
+	return nil
 }
