@@ -376,6 +376,325 @@ func TestDegradeReason_String(t *testing.T) {
 	}
 }
 
+// ---------- 边界值测试 ----------
+
+// CPU 恰好等于阈值（> 而非 >=，不应降级）
+func TestJudge_CPUEqualsThreshold(t *testing.T) {
+	m := newTestMonitor()
+	m.SetCPUPct(80)
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:    "test",
+		CPUThreshold: 80,
+	})
+
+	degraded, _ := judge.ShouldDegrade()
+	if degraded {
+		t.Fatal("expected no degradation when CPU equals threshold (uses > not >=)")
+	}
+}
+
+// CPU 100% 应降级
+func TestJudge_CPUAtMax(t *testing.T) {
+	m := newTestMonitor()
+	m.SetCPUPct(100)
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:    "test",
+		CPUThreshold: 80,
+	})
+
+	degraded, reason := judge.ShouldDegrade()
+	if !degraded {
+		t.Fatal("expected degradation when CPU is 100%")
+	}
+	if reason != ReasonCPUOverload {
+		t.Fatalf("expected CPUOverload, got %v", reason)
+	}
+}
+
+// QPS 恰好等于阈值（不应降级）
+func TestJudge_QPSEqualsThreshold(t *testing.T) {
+	m := newTestMonitor()
+	for i := 0; i < 5; i++ {
+		m.Record("test", monitor.ErrNone)
+	}
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:    "test",
+		QPSThreshold: 5,
+	})
+
+	degraded, _ := judge.ShouldDegrade()
+	if degraded {
+		t.Fatal("expected no degradation when QPS equals threshold (uses > not >=)")
+	}
+}
+
+// 错误率恰好等于阈值（不应降级）
+func TestJudge_ErrorRateEqualsThreshold(t *testing.T) {
+	m := newTestMonitor()
+	for i := 0; i < 5; i++ {
+		m.Record("test", monitor.ErrNone)
+	}
+	for i := 0; i < 5; i++ {
+		m.Record("test", monitor.ErrBackend5xx)
+	}
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:          "test",
+		ErrorRateThreshold: 0.5,
+	})
+
+	degraded, _ := judge.ShouldDegrade()
+	if degraded {
+		t.Fatal("expected no degradation when error rate equals threshold (uses > not >=)")
+	}
+}
+
+// 错误率 100% 应降级
+func TestJudge_ErrorRateAtMax(t *testing.T) {
+	m := newTestMonitor()
+	for i := 0; i < 10; i++ {
+		m.Record("test", monitor.ErrBackend5xx)
+	}
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:          "test",
+		ErrorRateThreshold: 0.99,
+	})
+
+	degraded, reason := judge.ShouldDegrade()
+	if !degraded {
+		t.Fatal("expected degradation when error rate is 100%")
+	}
+	if reason != ReasonHighErrorRate {
+		t.Fatalf("expected HighErrorRate, got %v", reason)
+	}
+}
+
+// ---------- 并发安全测试 ----------
+
+func TestJudge_ConcurrentAccess(t *testing.T) {
+	m := newTestMonitor()
+	for i := 0; i < 20; i++ {
+		m.Record("test", monitor.ErrNone)
+	}
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:    "test",
+		CPUThreshold: 80,
+		QPSThreshold: 10,
+	})
+
+	// 同时设置 CPU 并反复调用 ShouldDegrade
+	m.SetCPUPct(50)
+
+	done := make(chan struct{})
+	const goroutines = 20
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			for j := 0; j < 50; j++ {
+				judge.ShouldDegrade()
+			}
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < goroutines; i++ {
+		<-done
+	}
+	// 如果没 panic 就算通过
+}
+
+// ---------- 多路由测试 ----------
+
+func TestJudge_MultipleRoutes_Independent(t *testing.T) {
+	m := newTestMonitor()
+	m.InitErrorWindow("route-a", monitor.TimeWindowConfig{Size: time.Second, BucketCount: 10})
+	m.InitErrorWindow("route-b", monitor.TimeWindowConfig{Size: time.Second, BucketCount: 10})
+
+	// route-a: 大量错误, route-b: 全部成功
+	for i := 0; i < 8; i++ {
+		m.Record("route-a", monitor.ErrBackend5xx)
+	}
+	for i := 0; i < 2; i++ {
+		m.Record("route-a", monitor.ErrNone)
+	}
+	for i := 0; i < 10; i++ {
+		m.Record("route-b", monitor.ErrNone)
+	}
+
+	judgeA := NewJudge(m, RouteThreshold{
+		RouteName:          "route-a",
+		ErrorRateThreshold: 0.5, // 80% > 50% → 降级
+	})
+	judgeB := NewJudge(m, RouteThreshold{
+		RouteName:          "route-b",
+		ErrorRateThreshold: 0.5, // 0% < 50% → 不降级
+	})
+
+	degA, reasonA := judgeA.ShouldDegrade()
+	if !degA {
+		t.Fatal("expected route-a to degrade (error rate exceeds threshold)")
+	}
+	if reasonA != ReasonHighErrorRate {
+		t.Fatalf("expected HighErrorRate for route-a, got %v", reasonA)
+	}
+
+	degB, _ := judgeB.ShouldDegrade()
+	if degB {
+		t.Fatal("expected route-b not to degrade (error rate is zero)")
+	}
+}
+
+// ---------- 无指标数据测试 ----------
+
+// 尚未 Record 任何数据，但有阈值，不应 panic 且不应降级
+func TestJudge_NoMetrics_NoDegradation(t *testing.T) {
+	m := newTestMonitor()
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:          "test",
+		QPSThreshold:       100,
+		ErrorRateThreshold: 0.5,
+	})
+
+	degraded, reason := judge.ShouldDegrade()
+	if degraded {
+		t.Fatalf("expected no degradation with no metrics, got reason=%v", reason)
+	}
+}
+
+// ---------- 三个阈值全部启用 ----------
+
+// 三个阈值都设置但都没超
+func TestJudge_AllThreeThresholds_NoneExceeded(t *testing.T) {
+	m := newTestMonitor()
+	m.SetCPUPct(30)
+	for i := 0; i < 3; i++ {
+		m.Record("test", monitor.ErrNone)
+	}
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:          "test",
+		CPUThreshold:       80,
+		QPSThreshold:       10,
+		ErrorRateThreshold: 0.5,
+	})
+
+	degraded, reason := judge.ShouldDegrade()
+	if degraded {
+		t.Fatalf("expected no degradation when all thresholds are below limit, got reason=%v", reason)
+	}
+}
+
+// 三个阈值全部超标，应按 CPU > QPS > 错误率 优先级返回
+func TestJudge_AllThreeThresholds_AllExceeded(t *testing.T) {
+	m := newTestMonitor()
+	m.SetCPUPct(90)
+	for i := 0; i < 10; i++ {
+		m.Record("test", monitor.ErrBackend5xx)
+	}
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:          "test",
+		CPUThreshold:       80,
+		QPSThreshold:       5,
+		ErrorRateThreshold: 0.5,
+	})
+
+	degraded, reason := judge.ShouldDegrade()
+	if !degraded {
+		t.Fatal("expected degradation")
+	}
+	if reason != ReasonCPUOverload {
+		t.Fatalf("expected CPUOverload (highest priority), got %v", reason)
+	}
+}
+
+// 只有错误率阈值启用（QPS 和 CPU 都设为 0）
+func TestJudge_OnlyErrorRateEnabled(t *testing.T) {
+	m := newTestMonitor()
+	for i := 0; i < 6; i++ {
+		m.Record("test", monitor.ErrBackend5xx)
+	}
+	for i := 0; i < 4; i++ {
+		m.Record("test", monitor.ErrNone)
+	}
+
+	judge := NewJudge(m, RouteThreshold{
+		RouteName:          "test",
+		CPUThreshold:       0,   // 禁用
+		QPSThreshold:       0,   // 禁用
+		ErrorRateThreshold: 0.5, // 60% > 50%
+	})
+
+	degraded, reason := judge.ShouldDegrade()
+	if !degraded {
+		t.Fatal("expected degradation when only error rate is enabled and exceeded")
+	}
+	if reason != ReasonHighErrorRate {
+		t.Fatalf("expected HighErrorRate, got %v", reason)
+	}
+}
+
+// ---------- StaticResponseStrategy 边界测试 ----------
+
+func TestStaticResponseStrategy_EmptyHeadersAndBody(t *testing.T) {
+	strategy := NewStaticResponseStrategy(http.StatusOK, nil, "")
+
+	resp, err := strategy.Execute(nil, nil)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(body) != "" {
+		t.Fatalf("Body = %q, want empty", string(body))
+	}
+}
+
+func TestStaticResponseStrategy_MultipleHeaders(t *testing.T) {
+	headers := map[string]string{
+		"Content-Type":  "application/json",
+		"X-Custom-Head": "custom-value",
+		"Retry-After":   "120",
+	}
+	strategy := NewStaticResponseStrategy(
+		http.StatusServiceUnavailable,
+		headers,
+		`{"error":"degraded"}`,
+	)
+
+	resp, err := strategy.Execute(nil, nil)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("StatusCode = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	if resp.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("Content-Type = %q, want %q", resp.Header.Get("Content-Type"), "application/json")
+	}
+	if resp.Header.Get("X-Custom-Head") != "custom-value" {
+		t.Fatalf("X-Custom-Head = %q, want %q", resp.Header.Get("X-Custom-Head"), "custom-value")
+	}
+	if resp.Header.Get("Retry-After") != "120" {
+		t.Fatalf("Retry-After = %q, want %q", resp.Header.Get("Retry-After"), "120")
+	}
+}
+
+// ---------- 编译期接口检查 ----------
+
+func TestStaticResponseStrategy_ImplementsStrategy(t *testing.T) {
+	var s Strategy = NewStaticResponseStrategy(http.StatusOK, nil, "")
+	_ = s
+}
+
 // ---------- helper ----------
 
 func newTestMonitor() *monitor.Monitor {
