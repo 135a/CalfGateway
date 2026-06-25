@@ -1,5 +1,5 @@
 server:
-  port: 8090
+  port: 8100
   read_timeout: 30s
   write_timeout: 30s
   grace_period: 15s
@@ -10,11 +10,11 @@ proxy:
   max_conns_per_host: 0
 
 auth:
-  enabled: false
-  secret: ""
+  enabled: true
+  secret: "my-gateway-jwt-secret-at-least-32-chars"
   public_paths:
     - /health
-    - /v1/auth/login
+#    - /v1/api/hello
 
 rate_limit:
     enabled: false
@@ -62,7 +62,7 @@ routes:
       timeout: 30s
       max_requests: 3
     degradation:
-      enabled: true
+      enabled: false
       strategy: static_response
       cpu_threshold: 80
       qps_threshold: 1000
