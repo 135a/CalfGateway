@@ -10,7 +10,7 @@ import (
 )
 
 // ---------- Judge 降级判定 ----------
-
+// 没有降级的情况
 func TestJudge_AllThresholdsZero_NoDegradation(t *testing.T) {
 	m := newTestMonitor()
 	judge := NewJudge(m, RouteThreshold{
@@ -23,6 +23,7 @@ func TestJudge_AllThresholdsZero_NoDegradation(t *testing.T) {
 	}
 }
 
+// qps超过限制
 func TestJudge_QPSExceedsThreshold(t *testing.T) {
 	m := newTestMonitor()
 	// 记录 6 次请求 → QPS ≈ 6/1s = 6
@@ -44,6 +45,7 @@ func TestJudge_QPSExceedsThreshold(t *testing.T) {
 	}
 }
 
+// qps没有超过限制
 func TestJudge_QPSBelowThreshold(t *testing.T) {
 	m := newTestMonitor()
 	for i := 0; i < 3; i++ {
@@ -61,6 +63,7 @@ func TestJudge_QPSBelowThreshold(t *testing.T) {
 	}
 }
 
+// 错误率超过阈值
 func TestJudge_ErrorRateExceedsThreshold(t *testing.T) {
 	m := newTestMonitor()
 	// 4 成功 + 6 失败 → 错误率 60%
@@ -85,6 +88,7 @@ func TestJudge_ErrorRateExceedsThreshold(t *testing.T) {
 	}
 }
 
+// 错误率没有超过阈值
 func TestJudge_ErrorRateBelowThreshold(t *testing.T) {
 	m := newTestMonitor()
 	// 8 成功 + 2 失败 → 错误率 20%
@@ -184,6 +188,7 @@ func TestJudge_NetworkCountedAsError(t *testing.T) {
 	}
 }
 
+// Todo
 // 未初始化 ErrorWindow 的路由不应 panic，错误率应视为 0
 func TestJudge_NoErrorWindow_NoPanic(t *testing.T) {
 	m := monitor.NewMonitor(monitor.TimeWindowConfig{
@@ -202,8 +207,7 @@ func TestJudge_NoErrorWindow_NoPanic(t *testing.T) {
 	if degraded {
 		t.Fatalf("expected no degradation without error window, got reason=%v", reason)
 	}
-}
-
+} // Todo
 // 空路由名不应 panic
 func TestJudge_EmptyRouteName(t *testing.T) {
 	m := newTestMonitor()

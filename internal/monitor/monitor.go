@@ -57,6 +57,11 @@ func (m *Monitor) Stop() {
 	}
 }
 
+// SetCPUPct 设置 CPU 百分比（仅用于测试）
+func (m *Monitor) SetCPUPct(pct float64) {
+	m.cpuPercent = pct
+}
+
 // InitErrorWindow 初始化指定路由的错误率时间窗口
 // 不同路由可以使用不同的窗口参数
 // cfg 优先级：路由自己的 error_window > 全局默认 error_window
